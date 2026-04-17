@@ -7,8 +7,13 @@ DEST="$HOME/.review-as-me"
 mkdir -p "$DEST"
 cp "$SKILL_DIR/server.js" "$DEST/server.js"
 
+if [ ! -f "$DEST/review-guidelines.md" ]; then
+  cp "$SKILL_DIR/review-guidelines.md" "$DEST/review-guidelines.md"
+fi
+
 echo "✓ Created $DEST"
 echo "✓ Copied server.js → $DEST/server.js"
+echo "✓ Copied review-guidelines.md → $DEST/review-guidelines.md"
 echo ""
 echo "Start the review UI anytime with:"
 echo "  node ~/.review-as-me/server.js"
