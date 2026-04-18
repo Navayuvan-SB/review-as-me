@@ -5,6 +5,7 @@ SKILL_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 DEST="$HOME/.review-as-me"
 
 mkdir -p "$DEST"
+mkdir -p "$DEST/reviews"
 cp "$SKILL_DIR/server.js" "$DEST/server.js"
 
 if [ ! -f "$DEST/review-guidelines.md" ]; then
@@ -12,6 +13,7 @@ if [ ! -f "$DEST/review-guidelines.md" ]; then
 fi
 
 echo "✓ Created $DEST"
+echo "✓ Created $DEST/reviews"
 echo "✓ Copied server.js → $DEST/server.js"
 echo "✓ Copied review-guidelines.md → $DEST/review-guidelines.md"
 echo ""

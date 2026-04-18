@@ -81,10 +81,10 @@ Confirm PR is still open and not already reviewed by the current GitHub user.
 Before presenting results, save (or overwrite) the review to:
 
 ```
-~/.review-as-me/{owner}-{repo}-pr-{number}.md
+~/.review-as-me/reviews/{owner}-{repo}-pr-{number}.md
 ```
 
-Create `~/.review-as-me/` if it doesn't exist. Use this exact table format:
+Create `~/.review-as-me/reviews/` if it doesn't exist. Use this exact table format:
 
 ```markdown
 # PR Review: #{number} — {title}

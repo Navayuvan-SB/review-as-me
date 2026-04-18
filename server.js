@@ -9,7 +9,8 @@ const path = require('path');
 const url = require('url');
 const os = require('os');
 
-const REVIEWS_DIR = path.join(os.homedir(), '.review-as-me');
+const ROOT_DIR    = path.join(os.homedir(), '.review-as-me');
+const REVIEWS_DIR = path.join(ROOT_DIR, 'reviews');
 const PORT = 7842;
 
 // ─── Markdown parser (server-side) ───────────────────────────────────────────
@@ -31,7 +32,7 @@ function parseMd(md) {
   }
 
   // Data rows: lines starting with | followed by a number
-  // Column order: # | Issue | File | Category | Score | State | Published
+  // Column order: # | State | Published | Score | Category | Issue | File
   const rows = lines
     .filter(l => /^\|\s*\d+\s*\|/.test(l))
     .map(line => {
@@ -39,20 +40,18 @@ function parseMd(md) {
       const get = i => (parts[i] || '').trim();
 
       // File column may contain markdown link syntax [text](url)
-      const rawFile = get(3);
+      const rawFile = get(7);
       const linkMatch = rawFile.match(/\[([^\]]+)\]\(([^)]+)\)/);
       const fileDisplay = linkMatch ? linkMatch[1] : rawFile.replace(/`/g, '').trim();
       const link = linkMatch ? linkMatch[2] : null;
 
+      const published = get(3) || 'no';
+      const rawState  = get(2) || 'pending';
+      const state     = published === 'yes' && rawState === 'pending' ? 'accept' : rawState;
       return {
-        num:       get(1),
-        issue:     get(2),
-        file:      fileDisplay,
-        link,
-        category:  get(4),
-        score:     get(5),
-        state:     get(6) || 'pending',
-        published: get(7) || 'no',
+        num: get(1), state, published,
+        score: get(4), category: get(5), issue: get(6),
+        file: fileDisplay, link,
       };
     });
 
@@ -72,9 +71,10 @@ function patchMd(md, updatedRows) {
     const num = (parts[1] || '').trim();
     const row = byNum[num];
     if (!row) return line;
-    // Column order: # | Issue | File | Category | Score | State | Published
-    parts[6] = ' ' + row.state + ' ';
-    parts[7] = ' ' + row.published + ' ';
+    // Column order: # | State | Published | Score | Category | Issue | File
+    parts[2] = ' ' + row.state + ' ';
+    parts[3] = ' ' + row.published + ' ';
+    parts[6] = ' ' + row.issue + ' ';
     return parts.join('|');
   }).join('\n');
 }
@@ -136,7 +136,7 @@ const HTML = `<!DOCTYPE html>
 
     td.pub { width: 70px; }
     .ptog { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; border: 1px solid #d1d1d6; border-radius: 5px; padding: 3px 8px; font-size: 11px; font-weight: 500; background: #fff; user-select: none; transition: all .15s; }
-    .ptog.pyes { color: #248a3d; border-color: #34c759; background: #f0fdf4; }
+    .ptog.pyes { color: #248a3d; border-color: #34c759; background: #f0fdf4; cursor: default; opacity: 0.8; }
     .ptog.pno  { color: #8e8e93; }
     .pdot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
     .pyes .pdot { background: #34c759; }
@@ -156,6 +156,8 @@ const HTML = `<!DOCTYPE html>
     .cReusability { background: #e6f9ef; color: #248a3d; }
 
     td.issue { font-size: 12px; line-height: 1.5; max-width: 480px; }
+    .issue-text { cursor: text; display: block; }
+    .issue-edit { width: 100%; min-height: 60px; font-size: 12px; font-family: inherit; line-height: 1.5; border: 1px solid #0071e3; border-radius: 4px; padding: 4px 6px; resize: vertical; outline: none; }
     td.file  { font-family: 'SF Mono', Menlo, monospace; font-size: 11px; color: #6e6e73; max-width: 220px; line-height: 1.4; word-break: break-all; }
     td.file a { color: #0071e3; text-decoration: none; }
     td.file a:hover { text-decoration: underline; }
@@ -206,7 +208,7 @@ const HTML = `<!DOCTYPE html>
     return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  // Boot: list files
+  // Boot: list files, then restore URL state
   fetch('/api/reviews').then(function(r){ return r.json(); }).then(function(files) {
     var picker = document.getElementById('picker');
     files.forEach(function(f) {
@@ -214,16 +216,27 @@ const HTML = `<!DOCTYPE html>
       o.value = f; o.textContent = f;
       picker.appendChild(o);
     });
-    if (files.length === 1) { picker.value = files[0]; load(files[0]); }
+    var urlFile = new URLSearchParams(location.search).get('file');
+    var initial = urlFile && files.indexOf(urlFile) !== -1 ? urlFile
+                : files.length === 1 ? files[0] : null;
+    if (initial) { picker.value = initial; load(initial, true); }
   });
 
-  function load(filename) {
+  function load(filename, replace) {
     if (!filename) return;
     currentFile = filename;
+    var newUrl = '?file=' + encodeURIComponent(filename);
+    if (replace) history.replaceState(null, '', newUrl);
+    else         history.pushState(null, '', newUrl);
     fetch('/api/review?file=' + encodeURIComponent(filename))
       .then(function(r){ return r.json(); })
       .then(function(data) { render(data); });
   }
+
+  window.addEventListener('popstate', function() {
+    var f = new URLSearchParams(location.search).get('file');
+    if (f) { document.getElementById('picker').value = f; load(f, true); }
+  });
 
   function render(data) {
     rows = data.rows;
@@ -276,9 +289,12 @@ const HTML = `<!DOCTYPE html>
         ? '<a href="' + esc(row.link) + '" target="_blank" rel="noopener noreferrer">' + esc(row.file) + '</a>'
         : esc(row.file);
 
+      var issueHtml = '<span class="issue-text" id="itext-' + idx + '">' + esc(row.issue) + '</span>' +
+        '<textarea class="issue-edit" id="iedit-' + idx + '" style="display:none">' + esc(row.issue) + '</textarea>';
+
       tr.innerHTML =
         '<td class="num">'   + esc(row.num)   + '</td>' +
-        '<td class="issue">' + esc(row.issue) + '</td>' +
+        '<td class="issue">' + issueHtml       + '</td>' +
         '<td class="file">'  + fileHtml        + '</td>' +
         '<td>'               + catBadge        + '</td>' +
         '<td>'               + scoreBadge      + '</td>' +
@@ -293,10 +309,37 @@ const HTML = `<!DOCTYPE html>
       var sel = document.getElementById('sel-' + idx);
       if (sel) sel.addEventListener('change', function() { onState(idx, this.value); });
       var pub = document.getElementById('pub-' + idx);
-      if (pub) pub.addEventListener('click', function() { onPub(idx); });
+      if (pub && row.published !== 'yes') pub.addEventListener('click', function() { onPub(idx); });
+
+      // Double-click issue text to edit
+      var itext = document.getElementById('itext-' + idx);
+      var iedit  = document.getElementById('iedit-'  + idx);
+      if (itext) itext.addEventListener('dblclick', function() {
+        itext.style.display = 'none';
+        iedit.style.display = 'block';
+        iedit.focus();
+        iedit.select();
+      });
+      if (iedit) {
+        iedit.addEventListener('blur', function() { commitEdit(idx); });
+        iedit.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitEdit(idx); }
+          if (e.key === 'Escape') { iedit.value = rows[idx].issue; commitEdit(idx); }
+        });
+      }
     });
 
     updateStats();
+  }
+
+  function commitEdit(idx) {
+    var iedit  = document.getElementById('iedit-'  + idx);
+    var itext  = document.getElementById('itext-'  + idx);
+    rows[idx].issue = iedit.value;
+    itext.textContent = iedit.value;
+    iedit.style.display = 'none';
+    itext.style.display = '';
+    scheduleSave();
   }
 
   function onState(idx, val) {
@@ -309,11 +352,16 @@ const HTML = `<!DOCTYPE html>
   }
 
   function onPub(idx) {
-    rows[idx].published = rows[idx].published === 'yes' ? 'no' : 'yes';
+    if (rows[idx].published === 'yes') return;
+    rows[idx].published = 'yes';
+    rows[idx].state = 'accept';
     var el = document.getElementById('pub-' + idx);
-    var isYes = rows[idx].published === 'yes';
-    el.className = 'ptog ' + (isYes ? 'pyes' : 'pno');
-    el.innerHTML = '<span class="pdot"></span>' + rows[idx].published;
+    el.className = 'ptog pyes';
+    el.innerHTML = '<span class="pdot"></span>yes';
+    el.removeEventListener('click', el._pubHandler);
+    var sel = document.getElementById('sel-' + idx);
+    if (sel) { sel.value = 'accept'; sel.className = 'ss-accept'; }
+    sel.closest('tr').className = 's-accept';
     updateStats();
     scheduleSave();
   }
@@ -360,6 +408,8 @@ const HTML = `<!DOCTYPE html>
 
 // ─── HTTP Server ──────────────────────────────────────────────────────────────
 
+fs.mkdirSync(REVIEWS_DIR, { recursive: true });
+
 const server = http.createServer((req, res) => {
   const parsed = url.parse(req.url, true);
   const p = parsed.pathname;
@@ -378,7 +428,7 @@ const server = http.createServer((req, res) => {
   // List review files
   if (req.method === 'GET' && p === '/api/reviews') {
     const files = fs.readdirSync(REVIEWS_DIR)
-      .filter(f => f.endsWith('.md') && !f.startsWith('.'))
+      .filter(f => /^.+-pr-\d+\.md$/.test(f))
       .sort();
     return json(files);
   }
