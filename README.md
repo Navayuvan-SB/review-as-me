@@ -16,8 +16,6 @@ A Claude Code skill that reviews PRs in your personal style — and gets sharper
 
 ![Skill listing](assets/skill-listing.png)
 
-![Review UI](assets/review-ui.png)
-
 </div>
 
 ---
@@ -66,6 +64,8 @@ review as me: <owner/repo>#<number>
 ```
 
 ## Review UI
+
+![Review UI](assets/review-ui.png)
 
 - Browse all saved review files
 - Change issue state (`pending` → `accept` / `reject` / `edited`)
