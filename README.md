@@ -14,9 +14,9 @@ A Claude Code skill that reviews PRs in your personal style — and gets sharper
 
 <div align="center">
 
-![Review UI](assets/review-ui.png)
+![Skill listing](assets/skill-listing.png)
 
-![Terminal](assets/claude-code-usage.png)
+![Review UI](assets/review-ui.png)
 
 </div>
 
