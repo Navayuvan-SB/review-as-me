@@ -1,64 +1,56 @@
 ---
 name: review-as-me
-description: Performs a code review as the current user, applying personal review guidelines from ~/.claude/review-guidelines.md. Use when the user says "review as me", "review like me", or "review this PR as <username>".
+description: Use when the user says "review as me", "review like me", or "review this PR as <username>". Applies the user's personal review style and mandatory guidelines to a pull request, then optionally posts inline comments.
 ---
 
 # Review As Me
 
-Perform a code review as the current user, applying their personal review guidelines.
+Perform a code review as the current user, applying their personal review guidelines stored at `~/.review-as-me/review-guidelines.md`.
 
-## Setup (first-time)
+## Step -1 — Setup Check
 
-This skill requires two config files in `~/.claude/`:
+Check if `~/.review-as-me/server.js` exists.
 
-- `review-guidelines.md` — your personal review style guide (rules, patterns, tone)
-- `review-threshold.json` — confidence threshold for filtering issues (auto-created at 50 if missing)
+If it does **not** exist, locate `setup.sh` in the same directory as this skill file, tell the user "Running first-time setup…", and run it:
 
-If `review-guidelines.md` does not exist, ask the user to create it before proceeding.
-
-## Step 0 — Load Config
-
-**Before anything else:**
-
-1. Read `~/.claude/review-guidelines.md` — mandatory ruleset, every section MUST be checked
-2. Read `~/.claude/review-threshold.json` for the current threshold. If missing, create it:
-
-```json
-{
-  "threshold": 50,
-  "floor": 30,
-  "ceiling": 85,
-  "log": []
-}
+```bash
+bash <skill-dir>/setup.sh
 ```
 
-3. Get the current GitHub username: `gh api user --jq .login`
+Then continue.
+
+## Step 0 — Load Guidelines
+
+**Before anything else**, read the guidelines file:
+
+```
+~/.review-as-me/review-guidelines.md
+```
+
+If it doesn't exist, ask the user to create it before proceeding.
+
+This is the mandatory ruleset. Every section in it MUST be checked. You may also flag issues beyond the guidelines.
 
 ## Step 1 — Eligibility Check (Haiku agent)
-
-From the PR URL or number, determine `<owner>`, `<repo>`, and `<number>`.
-
-Run: `gh pr view <number> --repo <owner>/<repo> --json state,isDraft,title,author,reviews`
 
 Check if the PR is:
 - (a) closed or merged
 - (b) a draft
 - (c) trivial/automated (no real review needed)
-- (d) already reviewed by the current GitHub user (skip bot reviews)
+- (d) already reviewed by the current GitHub user — run `gh api user --jq .login` to get the username (skip bot reviews)
 
-If any of (a)–(d): stop.
+If any of (a)-(d): stop.
 
 ## Step 2 — PR Summary (Haiku agent)
 
-Fetch the PR with `gh pr view <number> --repo <owner>/<repo>` and `gh pr diff <number> --repo <owner>/<repo>`.
-
+Fetch the PR with `gh pr view <number> --repo <owner/repo>` and `gh pr diff`.
 Return: title, description, list of files changed, and a concise summary.
 
 ## Step 3 — 5 Parallel Review Agents (Sonnet)
 
 Launch all 5 at once. Each returns a list of issues with file, line, description, and confidence reason.
 
-- **Agent 1 — Guidelines audit**: Apply every section of `~/.claude/review-guidelines.md` against the diff. Flag violations with the specific rule quoted.
+- **Agent 1 — Guidelines audit**: Apply every section of `~/.review-as-me/review-guidelines.md` against the diff. Flag violations with the specific rule quoted.
 - **Agent 2 — Bug scan**: Shallow scan of diff for obvious logic bugs, crashes, missing guards. Ignore nitpicks.
 - **Agent 3 — Git history**: Check git blame/log on modified files. Flag issues that only make sense with historical context.
 - **Agent 4 — Previous PR comments**: Find recent merged PRs touching same files. Check their review comments for patterns that apply here.
@@ -78,13 +70,54 @@ One agent per issue. Score 0–100:
 
 For guideline-flagged issues: agent must confirm the guideline actually covers it.
 
-**Filter: keep only issues scoring ≥ threshold** (from `~/.claude/review-threshold.json`).
+**Filter: keep only issues scoring ≥ [CURRENT_THRESHOLD].** Read the current threshold from `~/.review-as-me/review-threshold.json` before filtering. If the file doesn't exist, use **50** as the default and create it.
 
 ## Step 5 — Final Eligibility Re-check (Haiku agent)
 
-Confirm PR is still open and not already reviewed by the current user.
+Confirm PR is still open and not already reviewed by the current GitHub user.
 
-## Step 6 — Present Results
+## Step 6 — Save Review File
+
+Before presenting results, save (or overwrite) the review to:
+
+```
+~/.review-as-me/reviews/{owner}-{repo}-pr-{number}.md
+```
+
+Create `~/.review-as-me/reviews/` if it doesn't exist. Use this exact table format:
+
+```markdown
+# PR Review: #{number} — {title}
+
+**Repo:** {owner}/{repo}
+**Branch:** `{branch}`
+**Author:** {author}
+**SHA:** `{full-sha}`
+**Reviewed as:** {github-username}
+**State legend:** `pending` · `accept` · `reject` · `edited`
+**Published legend:** `no` · `yes`
+
+---
+
+## Issues
+
+| # | State | Published | Score | Category | Issue | File |
+|---|-------|-----------|-------|----------|-------|------|
+| 1 | pending | no | 100 | Security | <issue summary> | `<file path>` |
+| 2 | pending | no | 75 | Bug | <issue summary> | `<file path>` |
+...
+
+---
+
+## Notes
+
+<any blocking issues or high-priority notes>
+```
+
+- `State` tracks the reviewer's decision: `pending` → `accept` / `reject` / `edited`
+- `Published` tracks whether the comment was posted to GitHub: starts as `no`, set to `yes` after posting
+
+## Step 7 — Present Results
 
 Present all issues to the user clearly (file, line link with full SHA, description, which guideline rule or reason).
 
@@ -92,10 +125,24 @@ Ask: "Should I post this as a comment on the PR?"
 
 If yes, post using `gh api POST /repos/{owner}/{repo}/pulls/{number}/reviews` with each issue as an inline comment at its exact line — **never as a single top-level PR comment**. Use the `comments` array in the review payload, with `path`, `line`, `side: "RIGHT"`, and `body` per issue. Fetch the exact line numbers from the file at the PR head commit before posting. Use `event: "REQUEST_CHANGES"`.
 
+After posting, update the `Published` column to `yes` for every issue that was included in the posted comment, then save the file again.
+
+## Step 8 — Cross-check Published Comments
+
+After posting and updating the file, verify the comments actually landed on GitHub:
+
+1. Fetch the review comments via CLI:
+   ```
+   gh pr view <number> --repo <owner/repo> --comments
+   ```
+2. For each issue marked `Published: yes`, confirm its comment body appears in the output.
+3. If any are missing, report which ones failed and set their `Published` back to `no` in the file.
+4. If all are present, confirm to the user: "All N comments verified on GitHub."
+
 ## Output Format
 
 ```
-### Code review (as <username>)
+### Code review (as {github-username})
 
 Found N issues:
 
@@ -108,7 +155,7 @@ https://github.com/<owner>/<repo>/blob/<full-sha>/<file>#L<start>-L<end>
 https://github.com/<owner>/<repo>/blob/<full-sha>/<file>#L<start>-L<end>
 ```
 
-If no issues ≥ threshold: "No issues found. Checked against personal guidelines and scanned for bugs."
+If no issues ≥ 75: "No issues found. Checked against personal guidelines and scanned for bugs."
 
 ## After the Review — Self-Improvement Loop
 
@@ -125,7 +172,7 @@ Analyse the review session and identify anything worth adding to the guidelines:
 
 ### 2. Draft Proposed Changes
 
-For each candidate, draft the exact text to add, edit, or remove in `~/.claude/review-guidelines.md`.
+For each candidate, draft the exact text to add, edit, or remove in `~/.review-as-me/review-guidelines.md`.
 
 Format each proposed change clearly:
 
@@ -169,7 +216,7 @@ Present each proposed change individually and ask:
 
 ### 4. Apply Approved Changes
 
-Write approved changes directly to `~/.claude/review-guidelines.md`:
+Write approved changes directly to `~/.review-as-me/review-guidelines.md`:
 - New learnings go under `## Learnings from Past Reviews` with the PR reference
 - Edits to existing rules are made in-place in the relevant section
 - Removals delete the flagged text
@@ -182,7 +229,7 @@ After the user decides whether to post the comment (or after presenting results 
 
 > "Were there issues I flagged that you felt were noise? Or issues I missed that you would have caught? (yes / no)"
 
-If yes, ask them to describe briefly. Record this in `~/.claude/review-threshold.json` under `feedback`.
+If yes, ask them to describe briefly. Record this in `~/.review-as-me/review-threshold.json` under `feedback`.
 
 ### 6. Auto-Adjust Threshold
 
@@ -204,15 +251,13 @@ After each review session, recalculate the threshold based on cumulative feedbac
 ```json
 {
   "threshold": 50,
-  "floor": 30,
-  "ceiling": 85,
   "log": [
     {
-      "date": "YYYY-MM-DD",
-      "pr": "owner/repo#number",
+      "date": "2026-04-16",
+      "pr": "mangoleaphq/gallabox#6439",
       "previous": 50,
       "new": 50,
-      "reason": "..."
+      "reason": "Initial value"
     }
   ]
 }
@@ -227,3 +272,16 @@ If the review produced no new patterns worth capturing in the guidelines, say so
 "Nothing new to add to the guidelines from this review."
 
 Do not manufacture learnings. Only propose changes when there is genuine signal from the review.
+
+## Key Rules from Guidelines (quick ref)
+
+- No `any` casts — always question why
+- Resolve complex DB types to primitives at layer boundaries; don't pass as separate params
+- Hardcoded string identifiers → enums/constants
+- Question necessity of new optional fields: "Do we need this? Is it mandatory?"
+- Avoid unnecessary re-exports
+- Use domain-specific loggers, not generic logger
+- Single responsibility per job
+- Avoid "utility" functions that aren't truly reusable
+- Follow existing patterns in the codebase unless there's a strong reason not to
+- Always ask "why" for non-trivial code changes, and expect a clear rationale
